@@ -1,4 +1,5 @@
 var monk = require('monk');
+var _ = require('lodash');
 
 /**
  * botkit-storage-mongo - MongoDB driver for Botkit
@@ -8,36 +9,70 @@ var monk = require('monk');
  * @return {Object} A storage object conforming to the Botkit storage interface
  */
 module.exports = function(config) {
-    /**
-     * Example mongoUri is:
-     * 'mongodb://test:test@ds037145.mongolab.com:37145/slack-bot-test'
-     * or
-     * 'localhost/mydb,192.168.1.1'
-     */
-    if (!config || !config.mongoUri) {
-        throw new Error('Need to provide mongo address.');
-    }
+  /**
+   * Example mongoUri is:
+   * 'mongodb://test:test@ds037145.mongolab.com:37145/slack-bot-test'
+   * or
+   * 'localhost/mydb,192.168.1.1'
+   */
+  if (!config || !config.mongoUri) {
+    throw new Error('Need to provide mongo address.');
+  }
 
-    var db = monk(config.mongoUri, config.mongoOptions);
+  var db = monk(config.mongoUri, config.mongoOptions);
 
-    db.catch(function(err) {
-        throw new Error(err);
+  db.catch(function(err) {
+    throw new Error(err);
+  });
+
+  var storage = {};
+
+  var tables = ['teams', 'channels', 'users'];
+  // if config.tables, add to the default tables
+  config.tables &&
+    config.tables.forEach(function(table) {
+      if (typeof table === 'string') tables.push(table);
     });
 
-    var storage = {};
+  tables.forEach(function(zone) {
+    storage[zone] = getStorage(db, zone);
+  });
 
-    var tables = ['teams', 'channels', 'users'];
-    // if config.tables, add to the default tables
-    config.tables && config.tables.forEach(function(table) {
-        if (typeof table === 'string') tables.push(table);
-    });
-
-    tables.forEach(function(zone) {
-        storage[zone] = getStorage(db, zone);
-    });
-
-    return storage;
+  return storage;
 };
+
+/**
+ * toDot
+ * transforms object to dot notation
+ *
+ * @param {Object} obj - object to transform
+ * @param {String} div - sperator for iteration, defaults to '.'
+ * @param {String} pre - prefix to attach to all dot notation strings
+ * @returns {Object} - dot notation
+ */
+function toDot(obj, div = '.', pre) {
+  if (typeof obj !== 'object') {
+    throw new Error('toDot requires a valid object');
+  }
+
+  if (pre != null) {
+    pre = pre + div;
+  } else {
+    pre = '';
+  }
+
+  const iteration = {};
+
+  Object.keys(obj).forEach(key => {
+    if (_.isPlainObject(obj[key])) {
+      Object.assign(iteration, toDot(obj[key], div, pre + key));
+    } else {
+      iteration[pre + key] = obj[key];
+    }
+  });
+
+  return iteration;
+}
 
 /**
  * Creates a storage object for a given "zone", i.e, teams, channels, or users
@@ -47,28 +82,49 @@ module.exports = function(config) {
  * @returns {{get: get, save: save, all: all, find: find}}
  */
 function getStorage(db, zone) {
-    var table = db.get(zone);
+  var table = db.get(zone);
 
-    return {
-        get: function(id, cb) {
-            return table.findOne({id: id}, cb);
+  return {
+    get: function(id, cb) {
+      return table.findOne({ id: id }, cb);
+    },
+    // shoot, let's just use the same set notation so we're never destroying fields
+    save: function(data, cb) {
+      return table.findOneAndUpdate(
+        {
+          id: data.id
         },
-        save: function(data, cb) {
-            return table.findOneAndUpdate({
-                id: data.id
-            }, data, {
-                upsert: true,
-                returnNewDocument: true
-            }, cb);
+        //data,
+        { $set: toDot(data) },
+        {
+          upsert: true,
+          returnNewDocument: true
         },
-        all: function(cb) {
-            return table.find({}, cb);
+        cb
+      );
+    },
+    // update is basically the same as save, but allows for dot.notation to set nested objects without destroying existing values.
+    update: function(data, cb) {
+      return table.findOneAndUpdate(
+        {
+          id: data.id
         },
-        find: function(data, cb) {
-            return table.find(data, cb);
+        { $set: data },
+        {
+          upsert: true,
+          returnNewDocument: true
         },
-        delete: function(id, cb) {
-            return table.findOneAndDelete({id: id}, cb);
-        }
-    };
+        cb
+      );
+    },
+    all: function(cb) {
+      return table.find({}, cb);
+    },
+    find: function(data, cb) {
+      return table.find(data, cb);
+    },
+    delete: function(id, cb) {
+      return table.findOneAndDelete({ id: id }, cb);
+    }
+  };
 }
